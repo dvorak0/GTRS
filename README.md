@@ -24,7 +24,7 @@ Please refer to [install.md](docs/install.md) for downloading the dataset and in
 
 ## Training and Inference
 Please refer to [gtrs_training.md](docs/gtrs_training.md) and [gtrs_inference.md](docs/gtrs_inference.md) respectively.
-
+[gtrs_simulation.md](docs/gtrs_simulation.md) provides instructions on collecting your own trajectory statistics.
 ## Citation
 Consider citing our work if you find it useful. Thanks!
 ```
