@@ -36,13 +36,11 @@ def main():
     split = 'trainval'
     logs = os.listdir(f'{root}/nuplan/nuplan-v1.1/splits/{split}')
     logs = [tmp.replace('.db', '') for tmp in logs]
-    navsim_logs = [log.replace('.pkl', '') for log in os.listdir(f'{root}/navsim/navsim_logs/{split}')]
     start_idx = 0
     end_idx = 700000
     os.makedirs(save_dir, exist_ok=True)
     save_file = f'{save_dir}/{split}-700k-rear-axle.npy'
 
-    logs = list(set(logs) & set(navsim_logs))
     print(f'total logs: {len(logs)}')
     filter = ScenarioFilter(
         None, None,
