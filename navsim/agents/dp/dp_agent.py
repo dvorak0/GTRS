@@ -41,9 +41,9 @@ def dp_loss_bev(
         config: DPConfig, traj_head
 ):
     # B, 8 (4 secs, 0.5Hz), 3
-    target_traj = targets["trajectory"]
-    dp_loss = traj_head.get_dp_loss(predictions['env_kv'], target_traj.float())
-    bev_semantic_loss = F.cross_entropy(predictions["bev_semantic_map"], targets["bev_semantic_map"].long())
+    target_traj = targets["trajectory"]  # (B, 8, 3)
+    dp_loss = traj_head.get_dp_loss(predictions['env_kv'], target_traj.float())  # env_kv: (B, 65 or 66, 256), target_traj: (B, 8, 3)
+    bev_semantic_loss = F.cross_entropy(predictions["bev_semantic_map"], targets["bev_semantic_map"].long())  # pred: (B, 7, 128, 256), target: (B, 128, 256)
     dp_loss = dp_loss * config.dp_loss_weight
     bev_semantic_loss = bev_semantic_loss * config.bev_loss_weight
     loss = (
@@ -104,13 +104,14 @@ class DPAgent(AbstractAgent):
         return [HydraFeatureBuilder(config=self._config)]
 
     def forward(self, features: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        return self.model(features)
+        # features: camera_feature (B, 3, 512, 2048), camera_feature_back (B, 3, 512, 2048), status_feature (B, 8), etc.
+        return self.model(features)  # Dict with 'env_kv': (B, 65 or 66, 256), 'bev_semantic_map': (B, 7, 128, 256), 'dp_pred': (B, 100, 8, 3) during inference
 
     def compute_loss(
             self,
             features: Dict[str, torch.Tensor],
-            targets: Dict[str, torch.Tensor],
-            predictions: Dict[str, torch.Tensor],
+            targets: Dict[str, torch.Tensor],  # trajectory: (B, 8, 3), bev_semantic_map: (B, 128, 256)
+            predictions: Dict[str, torch.Tensor],  # env_kv: (B, 65 or 66, 256), bev_semantic_map: (B, 7, 128, 256)
             tokens=None
     ):
         return dp_loss_bev(targets, predictions, self._config, self.model._trajectory_head)

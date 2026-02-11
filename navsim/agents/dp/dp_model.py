@@ -47,14 +47,14 @@ class SinusoidalPosEmb(nn.Module):
         super().__init__()
         self.dim = dim
 
-    def forward(self, x):
+    def forward(self, x):  # x: (B,)
         device = x.device
         half_dim = self.dim // 2
         emb = math.log(10000) / (half_dim - 1)
-        emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
-        emb = x[:, None] * emb[None, :]
-        emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
-        return emb
+        emb = torch.exp(torch.arange(half_dim, device=device) * -emb)  # (half_dim,)
+        emb = x[:, None] * emb[None, :]  # (B, half_dim)
+        emb = torch.cat((emb.sin(), emb.cos()), dim=-1)  # (B, dim)
+        return emb  # (B, dim)
 
 
 class SimpleDiffusionTransformer(nn.Module):
@@ -114,12 +114,12 @@ class SimpleDiffusionTransformer(nn.Module):
             raise RuntimeError("Unaccounted module {}".format(module))
 
     def forward(self,
-                sample,
-                timestep,
-                cond):
-        B, HORIZON, DIM = sample.shape
-        sample = sample.view(B, -1).float()
-        input_emb = self.input_emb(sample)
+                sample,  # (B, 8, 4) during training/inference
+                timestep,  # scalar or (B,)
+                cond):  # (B, 65 or 66, 256)
+        B, HORIZON, DIM = sample.shape  # B, 8, 4
+        sample = sample.view(B, -1).float()  # (B, 32)
+        input_emb = self.input_emb(sample)  # (B, d_model)
 
         timesteps = timestep
         if not torch.is_tensor(timesteps):
@@ -127,74 +127,74 @@ class SimpleDiffusionTransformer(nn.Module):
         elif torch.is_tensor(timesteps) and len(timesteps.shape) == 0:
             timesteps = timesteps[None].to(sample.device)
         # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
-        timesteps = timesteps.expand(sample.shape[0])
-        time_emb = self.time_emb(timesteps).unsqueeze(1)
+        timesteps = timesteps.expand(sample.shape[0])  # (B,)
+        time_emb = self.time_emb(timesteps).unsqueeze(1)  # (B, 1, d_model)
         # (B,To,n_emb)
-        cond_embeddings = torch.cat([time_emb, cond], dim=1)
+        cond_embeddings = torch.cat([time_emb, cond], dim=1)  # (B, 66 or 67, d_model)
         tc = cond_embeddings.shape[1]
         position_embeddings = self.cond_pos_emb[
                               :, :tc, :
-                              ]  # each position maps to a (learnable) vector
-        x = cond_embeddings + position_embeddings
-        memory = x
+                              ]  # each position maps to a (learnable) vector  # (1, 66 or 67, d_model)
+        x = cond_embeddings + position_embeddings  # (B, 66 or 67, d_model)
+        memory = x  # (B, 66 or 67, d_model)
         # (B,T_cond,n_emb)
 
         # decoder
-        token_embeddings = input_emb.unsqueeze(1)
+        token_embeddings = input_emb.unsqueeze(1)  # (B, 1, d_model)
         t = token_embeddings.shape[1]
         position_embeddings = self.pos_emb[
                               :, :t, :
-                              ]  # each position maps to a (learnable) vector
-        x = token_embeddings + position_embeddings
+                              ]  # each position maps to a (learnable) vector  # (1, 1, d_model)
+        x = token_embeddings + position_embeddings  # (B, 1, d_model)
         # (B,T,n_emb)
         x = self.dp_transformer(
-            tgt=x,
-            memory=memory,
-        )
+            tgt=x,  # (B, 1, d_model)
+            memory=memory,  # (B, 66 or 67, d_model)
+        )  # (B, 1, d_model)
         # (B,T,n_emb)
-        x = self.ln_f(x)
-        x = self.output_emb(x)
-        return x.squeeze(1).view(B, HORIZON, DIM)
+        x = self.ln_f(x)  # (B, 1, d_model)
+        x = self.output_emb(x)  # (B, 1, 32)
+        return x.squeeze(1).view(B, HORIZON, DIM)  # (B, 8, 4)
 
 
-def diff_traj(traj):
+def diff_traj(traj):  # traj: (B, 8, 3) [x, y, heading]
     B, L, _ = traj.shape
-    sin = traj[..., -1:].sin()
-    cos = traj[..., -1:].cos()
+    sin = traj[..., -1:].sin()  # (B, 8, 1)
+    cos = traj[..., -1:].cos()  # (B, 8, 1)
     zero_pad = torch.zeros((B, 1, 1), dtype=traj.dtype, device=traj.device)
-    x_diff = traj[..., 0:1].diff(n=1, dim=1, prepend=zero_pad)
+    x_diff = traj[..., 0:1].diff(n=1, dim=1, prepend=zero_pad)  # (B, 8, 1)
     x_diff = x_diff - x_diff_mean
     x_diff_range = max(abs(x_diff_max - x_diff_mean), abs(x_diff_min - x_diff_mean))
-    x_diff_norm = x_diff / x_diff_range
+    x_diff_norm = x_diff / x_diff_range  # (B, 8, 1)
 
     zero_pad = torch.zeros((B, 1, 1), dtype=traj.dtype, device=traj.device)
-    y_diff = traj[..., 1:2].diff(n=1, dim=1, prepend=zero_pad)
+    y_diff = traj[..., 1:2].diff(n=1, dim=1, prepend=zero_pad)  # (B, 8, 1)
     y_diff = y_diff - y_diff_mean
     y_diff_range = max(abs(y_diff_max - y_diff_mean), abs(y_diff_min - y_diff_mean))
-    y_diff_norm = y_diff / y_diff_range
+    y_diff_norm = y_diff / y_diff_range  # (B, 8, 1)
 
-    return torch.cat([x_diff_norm, y_diff_norm, sin, cos], -1)
+    return torch.cat([x_diff_norm, y_diff_norm, sin, cos], -1)  # (B, 8, 4)
 
 
-def cumsum_traj(norm_trajs):
+def cumsum_traj(norm_trajs):  # norm_trajs: (B, 8, 4) [x_diff_norm, y_diff_norm, sin, cos]
     B, L, _ = norm_trajs.shape
-    sin_values = norm_trajs[..., 2:3]
-    cos_values = norm_trajs[..., 3:4]
-    heading = torch.atan2(sin_values, cos_values)
+    sin_values = norm_trajs[..., 2:3]  # (B, 8, 1)
+    cos_values = norm_trajs[..., 3:4]  # (B, 8, 1)
+    heading = torch.atan2(sin_values, cos_values)  # (B, 8, 1)
 
     # Denormalize x differences
     x_diff_range = max(abs(x_diff_max - x_diff_mean), abs(x_diff_min - x_diff_mean))
-    x_diff = norm_trajs[..., 0:1] * x_diff_range + x_diff_mean
+    x_diff = norm_trajs[..., 0:1] * x_diff_range + x_diff_mean  # (B, 8, 1)
 
     # Denormalize y differences
     y_diff_range = max(abs(y_diff_max - y_diff_mean), abs(y_diff_min - y_diff_mean))
-    y_diff = norm_trajs[..., 1:2] * y_diff_range + y_diff_mean
+    y_diff = norm_trajs[..., 1:2] * y_diff_range + y_diff_mean  # (B, 8, 1)
 
     # Cumulative sum to get absolute positions
-    x = x_diff.cumsum(dim=1)
-    y = y_diff.cumsum(dim=1)
+    x = x_diff.cumsum(dim=1)  # (B, 8, 1)
+    y = y_diff.cumsum(dim=1)  # (B, 8, 1)
 
-    return torch.cat([x, y, heading], -1)
+    return torch.cat([x, y, heading], -1)  # (B, 8, 3) [x, y, heading]
 
 
 class DPHead(nn.Module):
@@ -222,16 +222,16 @@ class DPHead(nn.Module):
         )
         self.num_inference_steps = self.noise_scheduler.config.num_train_timesteps
 
-    def forward(self, kv) -> Dict[str, torch.Tensor]:
+    def forward(self, kv) -> Dict[str, torch.Tensor]:  # kv: (B, 65 or 66, 256)
         B = kv.shape[0]
         result = {}
         if not self.training:
-            NUM_PROPOSALS = self.config.num_proposals
+            NUM_PROPOSALS = self.config.num_proposals  # 100
 
-            condition = kv.repeat_interleave(NUM_PROPOSALS, dim=0)
+            condition = kv.repeat_interleave(NUM_PROPOSALS, dim=0)  # (B*100, 65 or 66, 256)
 
             noise = torch.randn(
-                size=(B * NUM_PROPOSALS, HORIZON, ACTION_DIM),
+                size=(B * NUM_PROPOSALS, HORIZON, ACTION_DIM),  # (B*100, 8, 4)
                 dtype=condition.dtype,
                 device=condition.device,
             )
@@ -240,42 +240,42 @@ class DPHead(nn.Module):
 
             for t in self.noise_scheduler.timesteps:
                 model_output = self.transformer_dp(
-                    noise,
+                    noise,  # (B*100, 8, 4)
                     t,
-                    condition
-                )
+                    condition  # (B*100, 65 or 66, 256)
+                )  # (B*100, 8, 4)
                 noise = self.noise_scheduler.step(
                     model_output, t, noise
-                ).prev_sample
-            traj = cumsum_traj(noise)
-            result['dp_pred'] = traj.view(B, NUM_PROPOSALS, HORIZON, ACTION_DIM_ORI)
+                ).prev_sample  # (B*100, 8, 4)
+            traj = cumsum_traj(noise)  # (B*100, 8, 3)
+            result['dp_pred'] = traj.view(B, NUM_PROPOSALS, HORIZON, ACTION_DIM_ORI)  # (B, 100, 8, 3)
 
         return result
 
-    def get_dp_loss(self, kv, gt_trajectory):
+    def get_dp_loss(self, kv, gt_trajectory):  # kv: (B, 65 or 66, 256), gt_trajectory: (B, 8, 3)
         B = kv.shape[0]
         device = kv.device
-        gt_trajectory = gt_trajectory.float()
-        gt_trajectory = diff_traj(gt_trajectory)
+        gt_trajectory = gt_trajectory.float()  # (B, 8, 3)
+        gt_trajectory = diff_traj(gt_trajectory)  # (B, 8, 4)
 
-        noise = torch.randn(gt_trajectory.shape, device=device, dtype=torch.float)
+        noise = torch.randn(gt_trajectory.shape, device=device, dtype=torch.float)  # (B, 8, 4)
         # Sample a random timestep for each image
         timesteps = torch.randint(
             0, self.noise_scheduler.config.num_train_timesteps,
             (B,), device=device
-        ).long()
+        ).long()  # (B,)
         # Add noise to the clean images according to the noise magnitude at each timestep
         # (this is the forward diffusion process)
         noisy_dp_input = self.noise_scheduler.add_noise(
             gt_trajectory, noise, timesteps
-        )
+        )  # (B, 8, 4)
 
         # Predict the noise residual
         pred = self.transformer_dp(
-            noisy_dp_input,
-            timesteps,
-            kv
-        )
+            noisy_dp_input,  # (B, 8, 4)
+            timesteps,  # (B,)
+            kv  # (B, 65 or 66, 256)
+        )  # (B, 8, 4)
         return F.mse_loss(pred, noise)
 
 
@@ -348,55 +348,55 @@ class DPModel(nn.Module):
 
     def forward(self, features: Dict[str, torch.Tensor],
                 interpolated_traj=None) -> Dict[str, torch.Tensor]:
-        camera_feature: torch.Tensor = features["camera_feature"]
-        camera_feature_back: torch.Tensor = features["camera_feature_back"]
-        status_feature: torch.Tensor = features["status_feature"][0]
+        camera_feature: torch.Tensor = features["camera_feature"]  # List of (B, 3, 512, 2048)
+        camera_feature_back: torch.Tensor = features["camera_feature_back"]  # List of (B, 3, 512, 2048)
+        status_feature: torch.Tensor = features["status_feature"][0]  # (B, 8) or (B, num_ego_status*8)
 
         batch_size = status_feature.shape[0]
         assert (camera_feature[-1].shape[0] == batch_size)
 
-        camera_feature_curr = camera_feature[-1]
+        camera_feature_curr = camera_feature[-1]  # (B, 3, 512, 2048)
         if isinstance(camera_feature_back, list):
-            camera_feature_back_curr = camera_feature_back[-1]
+            camera_feature_back_curr = camera_feature_back[-1]  # (B, 3, 512, 2048)
         else:
-            camera_feature_back_curr = camera_feature_back
-        img_tokens, bev_tokens, up_bev = self._backbone(camera_feature_curr, camera_feature_back_curr)
-        keyval = self.downscale_layer(bev_tokens)
+            camera_feature_back_curr = camera_feature_back  # (B, 3, 512, 2048)
+        img_tokens, bev_tokens, up_bev = self._backbone(camera_feature_curr, camera_feature_back_curr)  # img_tokens: (B, 2048, 1024), bev_tokens: (B, 64, 1024), up_bev: (B, 64, 64, 64)
+        keyval = self.downscale_layer(bev_tokens)  # (B, 64, 256)
         assert not self._config.use_temporal_bev_kv
         if self._config.use_temporal_bev_kv:
             with torch.no_grad():
-                camera_feature_prev = camera_feature[-2]
-                camera_feature_back_prev = camera_feature_back[-2]
-                img_tokens, bev_tokens, up_bev = self._backbone(camera_feature_prev, camera_feature_back_prev)
-                keyval_prev = self.downscale_layer(bev_tokens)
+                camera_feature_prev = camera_feature[-2]  # (B, 3, 512, 2048)
+                camera_feature_back_prev = camera_feature_back[-2]  # (B, 3, 512, 2048)
+                img_tokens, bev_tokens, up_bev = self._backbone(camera_feature_prev, camera_feature_back_prev)  # img_tokens: (B, 2048, 1024), bev_tokens: (B, 64, 1024), up_bev: (B, 64, 64, 64)
+                keyval_prev = self.downscale_layer(bev_tokens)  # (B, 64, 256)
             # grad for fusion layer
             C = keyval.shape[-1]
             keyval = self.temporal_bev_fusion(
                 torch.cat([
-                    keyval.permute(0, 2, 1).view(batch_size, C, self._backbone.bev_h, self._backbone.bev_w),
-                    keyval_prev.permute(0, 2, 1).view(batch_size, C, self._backbone.bev_h, self._backbone.bev_w)
-                ], 1)
-            ).view(batch_size, C, -1).permute(0, 2, 1).contiguous()
+                    keyval.permute(0, 2, 1).view(batch_size, C, self._backbone.bev_h, self._backbone.bev_w),  # (B, 256, 8, 8)
+                    keyval_prev.permute(0, 2, 1).view(batch_size, C, self._backbone.bev_h, self._backbone.bev_w)  # (B, 256, 8, 8)
+                ], 1)  # (B, 512, 8, 8)
+            ).view(batch_size, C, -1).permute(0, 2, 1).contiguous()  # (B, 64, 256)
 
-        bev_semantic_map = self._bev_semantic_head(up_bev)
+        bev_semantic_map = self._bev_semantic_head(up_bev)  # (B, 7, 128, 256)
         if self._config.num_ego_status == 1 and status_feature.shape[1] == 32:
-            status_encoding = self._status_encoding(status_feature[:, :8])
+            status_encoding = self._status_encoding(status_feature[:, :8])  # (B, 256)
         else:
-            status_encoding = self._status_encoding(status_feature)
+            status_encoding = self._status_encoding(status_feature)  # (B, 256)
 
-        keyval = torch.concatenate([keyval, status_encoding[:, None]], dim=1)
+        keyval = torch.concatenate([keyval, status_encoding[:, None]], dim=1)  # (B, 65, 256)
         if self._config.use_hist_ego_status:
-            hist_status_encoding = self._hist_status_encoding(features['hist_status_feature'])
-            keyval = torch.concatenate([keyval, hist_status_encoding[:, None]], dim=1)
+            hist_status_encoding = self._hist_status_encoding(features['hist_status_feature'])  # (B, 256)
+            keyval = torch.concatenate([keyval, hist_status_encoding[:, None]], dim=1)  # (B, 66, 256)
 
-        keyval += self._keyval_embedding.weight[None, ...]
+        keyval += self._keyval_embedding.weight[None, ...]  # (B, 65 or 66, 256)
 
         output: Dict[str, torch.Tensor] = {}
-        trajectory = self._trajectory_head(keyval)
+        trajectory = self._trajectory_head(keyval)  # Dict with 'dp_pred': (B, num_proposals, 8, 3) during inference
 
         output.update(trajectory)
 
-        output['env_kv'] = keyval
-        output['bev_semantic_map'] = bev_semantic_map
+        output['env_kv'] = keyval  # (B, 65 or 66, 256)
+        output['bev_semantic_map'] = bev_semantic_map  # (B, 7, 128, 256)
 
         return output
