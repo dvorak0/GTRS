@@ -98,41 +98,41 @@ class HydraBackboneBEV(nn.Module):
                 (1, 1),
             )
 
-    def top_down(self, x):
-        p5 = self.relu(self.c5_conv(x))
-        p4 = self.relu(self.up_conv5(self.upsample(p5)))
-        p3 = self.relu(self.up_conv4(self.upsample2(p4)))
-        return p3
+    def top_down(self, x):  # x: (B, 1024, 8, 8)
+        p5 = self.relu(self.c5_conv(x))  # (B, 64, 8, 8)
+        p4 = self.relu(self.up_conv5(self.upsample(p5)))  # (B, 64, 16, 16)
+        p3 = self.relu(self.up_conv4(self.upsample2(p4)))  # (B, 64, 64, 64)
+        return p3  # (B, 64, 64, 64)
 
-    def encode_img(self, img):
+    def encode_img(self, img):  # img: (B, 3, 512, 2048)
         B, C, H, W = img.shape
         if self.backbone_type == 'vov':
-            image_features = self.image_encoder(img)[-1]
+            image_features = self.image_encoder(img)[-1]  # (B, 1024, H/32, W/32) -> (B, 1024, 16, 64)
         else:
             raise ValueError('Forward wrong backbone')
-        img_tokens = self.avgpool_img(image_features)
-        return img_tokens.flatten(-2, -1).permute(0, 2, 1)
+        img_tokens = self.avgpool_img(image_features)  # (B, 1024, 16, 64) -> adaptive pool to img_vert_anchors x img_horz_anchors
+        return img_tokens.flatten(-2, -1).permute(0, 2, 1)  # (B, 1024, 1024) -> (B, 1024, 1024)
 
-    def forward(self, image_front, image_back):
+    def forward(self, image_front, image_back):  # image_front: (B, 3, 512, 2048), image_back: (B, 3, 512, 2048)
         B = image_front.shape[0]
 
-        image_features_front = self.encode_img(image_front)
-        image_features_back = self.encode_img(image_back)
+        image_features_front = self.encode_img(image_front)  # (B, 1024, 1024) - 1024 tokens = 16x64
+        image_features_back = self.encode_img(image_back)  # (B, 1024, 1024) - 1024 tokens = 16x64
 
-        img_tokens = torch.cat([image_features_front, image_features_back], 1)
-        bev_tokens = self.bev_queries.weight[None].repeat(B, 1, 1)
-        img_len = img_tokens.shape[1]
+        img_tokens = torch.cat([image_features_front, image_features_back], 1)  # (B, 2048, 1024) - concat front + back
+        bev_tokens = self.bev_queries.weight[None].repeat(B, 1, 1)  # (B, 64, 1024) - 64 = 8x8 BEV grid
+        img_len = img_tokens.shape[1]  # 2048
         tokens = torch.cat([
             img_tokens, bev_tokens
-        ], 1)
+        ], 1)  # (B, 2112, 1024) - 2048 img + 64 bev
 
         tokens = self.fusion_encoder(
-            tokens + self.pos_emb.weight[None].repeat(B, 1, 1)
-        )
-        img_tokens_ = tokens[:, :img_len]
-        bev_tokens_ = tokens[:, img_len:]
+            tokens + self.pos_emb.weight[None].repeat(B, 1, 1)  # (B, 2112, 1024)
+        )  # (B, 2112, 1024)
+        img_tokens_ = tokens[:, :img_len]  # (B, 2048, 1024)
+        bev_tokens_ = tokens[:, img_len:]  # (B, 64, 1024)
 
         up_bev_tokens = self.top_down(
-            bev_tokens_.permute(0, 2, 1).view(B, self.img_feat_c, self.bev_h, self.bev_w)
-        )
-        return img_tokens_, bev_tokens_, up_bev_tokens
+            bev_tokens_.permute(0, 2, 1).view(B, self.img_feat_c, self.bev_h, self.bev_w)  # (B, 1024, 8, 8)
+        )  # (B, 64, 64, 64)
+        return img_tokens_, bev_tokens_, up_bev_tokens  # (B, 2048, 1024), (B, 64, 1024), (B, 64, 64, 64)
